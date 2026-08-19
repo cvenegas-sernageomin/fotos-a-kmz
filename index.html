@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Fotos a KMZ</title>
+<meta name="theme-color" content="#1e5a82">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<style>
+  :root{ --azul:#1e5a82; --azul-osc:#144463; --gris:#f3f5f7; --borde:#d7dde3; --ok:#2e7d46; --warn:#b5651d; }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--gris);color:#222;}
+  header{background:var(--azul);color:#fff;padding:14px 18px;display:flex;align-items:center;gap:10px;}
+  header h1{font-size:17px;margin:0;font-weight:600;}
+  header .ver{font-size:11px;opacity:.75;margin-left:auto;}
+  main{max-width:640px;margin:0 auto;padding:16px;}
+  .card{background:#fff;border:1px solid var(--borde);border-radius:10px;padding:16px;margin-bottom:14px;}
+  .card h2{font-size:14px;margin:0 0 10px;color:var(--azul-osc);}
+  label{display:block;font-size:13px;margin:10px 0 4px;color:#444;}
+  input[type=text],input[type=number]{width:100%;padding:8px;border:1px solid var(--borde);border-radius:6px;font-size:14px;}
+  input[type=file]{display:none;}
+  .btn{display:inline-block;background:var(--azul);color:#fff;border:none;border-radius:8px;padding:11px 18px;
+    font-size:14px;font-weight:600;cursor:pointer;text-align:center;}
+  .btn:active{background:var(--azul-osc);}
+  .btn.secundario{background:#fff;color:var(--azul);border:1px solid var(--azul);}
+  .btn[disabled]{opacity:.5;cursor:default;}
+  .btn-file{width:100%;}
+  .lista-fotos{font-size:13px;color:#555;margin-top:8px;}
+  .progreso{margin-top:12px;}
+  .barra{height:8px;background:var(--borde);border-radius:5px;overflow:hidden;}
+  .barra > div{height:100%;background:var(--azul);width:0%;transition:width .15s;}
+  .log{font-size:12px;color:#666;margin-top:6px;max-height:140px;overflow-y:auto;background:var(--gris);
+    border-radius:6px;padding:8px;font-family:ui-monospace,Consolas,monospace;}
+  .log div.ok{color:var(--ok);}
+  .log div.warn{color:var(--warn);}
+  .resumen{margin-top:12px;font-size:13px;}
+  .resumen b{color:var(--azul-osc);}
+  .pill{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;margin-right:6px;}
+  .pill.ok{background:#e3f3e6;color:var(--ok);}
+  .pill.warn{background:#fbe9d9;color:var(--warn);}
+  .descarga{margin-top:14px;}
+  footer{max-width:640px;margin:0 auto;padding:0 16px 30px;font-size:12px;color:#888;}
+  .oculto{display:none !important;}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📷 Fotos a KMZ</h1>
+  <span class="ver">v1</span>
+</header>
+
+<main>
+
+  <div class="card">
+    <h2>1. Elegir fotos</h2>
+    <button class="btn btn-file" id="btnElegir">Elegir fotos (.jpg)</button>
+    <input type="file" id="inputFotos" accept="image/jpeg" multiple>
+    <div class="lista-fotos" id="listaFotos">Ninguna foto elegida todavía.</div>
+  </div>
+
+  <div class="card">
+    <h2>2. Opciones</h2>
+    <label for="nombreDoc">Nombre del documento KMZ</label>
+    <input type="text" id="nombreDoc" value="Fotos georreferenciadas">
+    <label for="maxHd">Tamaño máximo de la foto en alta resolución (px de lado mayor)</label>
+    <input type="number" id="maxHd" value="3000" min="500" step="100">
+  </div>
+
+  <div class="card">
+    <h2>3. Generar</h2>
+    <button class="btn" id="btnGenerar" disabled>Generar KMZ</button>
+
+    <div class="progreso oculto" id="bloqueProgreso">
+      <div class="barra"><div id="barraFill"></div></div>
+      <div class="log" id="log"></div>
+    </div>
+
+    <div class="resumen oculto" id="bloqueResumen">
+      <span class="pill ok" id="pillOk"></span>
+      <span class="pill warn oculto" id="pillWarn"></span>
+      <div class="descarga">
+        <a class="btn" id="linkDescarga" download="fotos.kmz">⬇ Descargar KMZ</a>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<footer>
+  Funciona 100% en el navegador — las fotos no se suben a ningún servidor. El KMZ generado
+  incluye cada foto (miniatura + versión en alta resolución) embebida dentro del propio
+  archivo, así que se puede abrir en cualquier PC con Google Earth Pro.
+</footer>
+
+<script src="vendor/jszip.min.js"></script>
+<script>
+// ============================================================
+// Lector EXIF minimo (GPS + orientacion + fecha), sin dependencias.
+// ============================================================
+function encontrarInicioTiff(view) {
+  if (view.getUint16(0) !== 0xFFD8) return null; // no es JPEG
+  let offset = 2;
+  const len = view.byteLength;
+  while (offset < len - 1) {
+    if (view.getUint8(offset) !== 0xFF) break;
+    const marker = view.getUint8(offset + 1);
+    if (marker === 0xD8 || marker === 0x01 || (marker >= 0xD0 && marker <= 0xD7)) { offset += 2; continue; }
+    if (marker === 0xD9 || marker === 0xDA) break; // fin de imagen / inicio de scan
+    if (offset + 4 > len) break;
+    const size = view.getUint16(offset + 2);
+    if (marker === 0xE1 && offset + 10 <= len &&
+        view.getUint8(offset+4)===0x45 && view.getUint8(offset+5)===0x78 &&
+        view.getUint8(offset+6)===0x69 && view.getUint8(offset+7)===0x66) {
+      return offset + 4 + 6; // tras "Exif\0\0"
+    }
+    offset += 2 + size;
+  }
+  return null;
+}
+
+function leerIFD(view, ifdOffset, little) {
+  const count = view.getUint16(ifdOffset, little);
+  const entradas = {};
+  for (let i = 0; i < count; i++) {
+    const eo = ifdOffset + 2 + i * 12;
+    entradas[view.getUint16(eo, little)] = {
+      tipo: view.getUint16(eo + 2, little),
+      n: view.getUint32(eo + 4, little),
+      entryOffset: eo,
+    };
+  }
+  return entradas;
+}
+
+const TAM_TIPO = {1:1,2:1,3:2,4:4,5:8,7:1,9:4,10:8};
+
+function valorEntrada(view, tiffStart, e, little) {
+  const size = (TAM_TIPO[e.tipo] || 1) * e.n;
+  const dataOffset = size <= 4 ? e.entryOffset + 8 : tiffStart + view.getUint32(e.entryOffset + 8, little);
+  if (e.tipo === 2) { // ASCII
+    let s = '';
+    for (let i = 0; i < e.n - 1; i++) s += String.fromCharCode(view.getUint8(dataOffset + i));
+    return s;
+  }
+  if (e.tipo === 5 || e.tipo === 10) { // RATIONAL / SRATIONAL
+    const res = [];
+    for (let i = 0; i < e.n; i++) {
+      const num = e.tipo === 5 ? view.getUint32(dataOffset + i*8, little) : view.getInt32(dataOffset + i*8, little);
+      const den = e.tipo === 5 ? view.getUint32(dataOffset + i*8+4, little) : view.getInt32(dataOffset + i*8+4, little);
+      res.push(den !== 0 ? num / den : 0);
+    }
+    return e.n === 1 ? res[0] : res;
+  }
+  if (e.tipo === 3) { // SHORT
+    if (e.n === 1) return view.getUint16(e.entryOffset + 8, little);
+    const res = [];
+    for (let i = 0; i < e.n; i++) res.push(view.getUint16(dataOffset + i*2, little));
+    return res;
+  }
+  if (e.tipo === 4) { // LONG
+    if (e.n === 1) return view.getUint32(e.entryOffset + 8, little);
+    const res = [];
+    for (let i = 0; i < e.n; i++) res.push(view.getUint32(dataOffset + i*4, little));
+    return res;
+  }
+  // BYTE / UNDEFINED
+  if (e.n === 1) return view.getUint8(e.entryOffset + 8);
+  const res = [];
+  for (let i = 0; i < e.n; i++) res.push(view.getUint8(dataOffset + i));
+  return res;
+}
+
+function dmsADecimal(dms, ref) {
+  if (!dms || dms.length < 3) return null;
+  const dec = dms[0] + dms[1] / 60 + dms[2] / 3600;
+  return (ref === 'S' || ref === 'W') ? -dec : dec;
+}
+
+function leerExif(buffer) {
+  const view = new DataView(buffer);
+  const tiffStart = encontrarInicioTiff(view);
+  if (tiffStart === null) return {};
+  const orden = view.getUint16(tiffStart);
+  const little = orden === 0x4949;
+  const ifd0Offset = tiffStart + view.getUint32(tiffStart + 4, little);
+  const ifd0 = leerIFD(view, ifd0Offset, little);
+
+  const out = {};
+  if (ifd0[0x0112]) out.orientacion = valorEntrada(view, tiffStart, ifd0[0x0112], little);
+  if (ifd0[0x0132]) out.fecha = valorEntrada(view, tiffStart, ifd0[0x0132], little);
+
+  if (ifd0[0x8769]) {
+    try {
+      const exifOffset = tiffStart + valorEntrada(view, tiffStart, ifd0[0x8769], little);
+      const exifIfd = leerIFD(view, exifOffset, little);
+      if (exifIfd[0x9003]) out.fecha = valorEntrada(view, tiffStart, exifIfd[0x9003], little);
+    } catch (e) {}
+  }
+
+  if (ifd0[0x8825]) {
+    try {
+      const gpsOffset = tiffStart + valorEntrada(view, tiffStart, ifd0[0x8825], little);
+      const gps = leerIFD(view, gpsOffset, little);
+      const latRef = gps[1] ? valorEntrada(view, tiffStart, gps[1], little) : null;
+      const lat = gps[2] ? valorEntrada(view, tiffStart, gps[2], little) : null;
+      const lonRef = gps[3] ? valorEntrada(view, tiffStart, gps[3], little) : null;
+      const lon = gps[4] ? valorEntrada(view, tiffStart, gps[4], little) : null;
+      const altRef = gps[5] ? valorEntrada(view, tiffStart, gps[5], little) : null;
+      const alt = gps[6] ? valorEntrada(view, tiffStart, gps[6], little) : null;
+      const latDec = dmsADecimal(lat, latRef);
+      const lonDec = dmsADecimal(lon, lonRef);
+      if (latDec !== null && lonDec !== null) {
+        out.lat = latDec;
+        out.lon = lonDec;
+        out.alt = alt ? (altRef === 1 ? -alt : alt) : 0;
+      }
+    } catch (e) {}
+  }
+  return out;
+}
+
+// ============================================================
+// Canvas: decodifica ya orientada (el navegador aplica el tag EXIF al
+// decodificar, asi que NO hay que rotar a mano - hacerlo de nuevo
+// duplicaria la rotacion) y reescala.
+// ============================================================
+async function cargarBitmapOrientado(archivo) {
+  if ('createImageBitmap' in window) {
+    try {
+      return await createImageBitmap(archivo, { imageOrientation: 'from-image' });
+    } catch (e) { /* cae al metodo de respaldo */ }
+  }
+  const url = URL.createObjectURL(archivo);
+  const img = await cargarImagen(url);
+  URL.revokeObjectURL(url);
+  return img; // <img> tambien viene auto-orientado en navegadores modernos
+}
+
+function dibujarEscalado(fuente, maxLado) {
+  const w = fuente.width || fuente.naturalWidth;
+  const h = fuente.height || fuente.naturalHeight;
+  let escala = 1;
+  if (maxLado && Math.max(w, h) > maxLado) escala = maxLado / Math.max(w, h);
+  const canvasW = Math.max(1, Math.round(w * escala));
+  const canvasH = Math.max(1, Math.round(h * escala));
+  const canvas = document.createElement('canvas');
+  canvas.width = canvasW;
+  canvas.height = canvasH;
+  canvas.getContext('2d').drawImage(fuente, 0, 0, canvasW, canvasH);
+  return canvas;
+}
+
+function canvasABlob(canvas, calidad) {
+  return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', calidad));
+}
+
+function cargarImagen(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
+// ============================================================
+// KML / KMZ
+// ============================================================
+function escaparXml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function formatearFechaExif(f) {
+  if (!f) return '';
+  // "YYYY:MM:DD HH:MM:SS" -> "YYYY-MM-DD HH:MM:SS"
+  const m = f.match(/^(\d{4}):(\d{2}):(\d{2}) (.*)$/);
+  return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}` : f;
+}
+
+// ============================================================
+// UI + flujo principal
+// ============================================================
+const inputFotos = document.getElementById('inputFotos');
+const btnElegir = document.getElementById('btnElegir');
+const listaFotos = document.getElementById('listaFotos');
+const btnGenerar = document.getElementById('btnGenerar');
+const bloqueProgreso = document.getElementById('bloqueProgreso');
+const barraFill = document.getElementById('barraFill');
+const logDiv = document.getElementById('log');
+const bloqueResumen = document.getElementById('bloqueResumen');
+const pillOk = document.getElementById('pillOk');
+const pillWarn = document.getElementById('pillWarn');
+const linkDescarga = document.getElementById('linkDescarga');
+
+let archivosElegidos = [];
+
+btnElegir.addEventListener('click', () => inputFotos.click());
+
+inputFotos.addEventListener('change', () => {
+  archivosElegidos = Array.from(inputFotos.files).filter(f => /\.(jpe?g)$/i.test(f.name));
+  if (archivosElegidos.length === 0) {
+    listaFotos.textContent = 'Ninguna foto elegida todavía.';
+    btnGenerar.disabled = true;
+  } else {
+    listaFotos.textContent = `${archivosElegidos.length} foto(s) elegida(s).`;
+    btnGenerar.disabled = false;
+  }
+  bloqueResumen.classList.add('oculto');
+});
+
+function log(msg, clase) {
+  const d = document.createElement('div');
+  if (clase) d.className = clase;
+  d.textContent = msg;
+  logDiv.appendChild(d);
+  logDiv.scrollTop = logDiv.scrollHeight;
+}
+
+btnGenerar.addEventListener('click', generarKmz);
+
+async function generarKmz() {
+  btnGenerar.disabled = true;
+  btnElegir.disabled = true;
+  bloqueProgreso.classList.remove('oculto');
+  bloqueResumen.classList.add('oculto');
+  logDiv.innerHTML = '';
+  barraFill.style.width = '0%';
+
+  const nombreDoc = document.getElementById('nombreDoc').value.trim() || 'Fotos georreferenciadas';
+  const maxHd = Math.max(200, parseInt(document.getElementById('maxHd').value, 10) || 3000);
+  const maxThumb = 1600;
+  const anchoGlobo = 900;
+
+  const zip = new JSZip();
+  const placemarks = [];
+  let conGps = 0;
+  const sinGps = [];
+
+  for (let i = 0; i < archivosElegidos.length; i++) {
+    const archivo = archivosElegidos[i];
+    barraFill.style.width = `${Math.round((i / archivosElegidos.length) * 100)}%`;
+    try {
+      const buffer = await archivo.arrayBuffer();
+      const exif = leerExif(buffer);
+
+      if (exif.lat === undefined || exif.lon === undefined) {
+        sinGps.push(archivo.name);
+        log(`⚠ ${archivo.name}: sin GPS, omitida`, 'warn');
+        continue;
+      }
+      conGps++;
+
+      const bitmap = await cargarBitmapOrientado(archivo);
+
+      const canvasThumb = dibujarEscalado(bitmap, maxThumb);
+      const blobThumb = await canvasABlob(canvasThumb, 0.88);
+
+      const canvasHd = dibujarEscalado(bitmap, maxHd);
+      const blobHd = await canvasABlob(canvasHd, 0.92);
+      if (bitmap.close) bitmap.close();
+
+      const base = archivo.name.replace(/\.(jpe?g)$/i, '');
+      const nombreThumb = `files/${base}_thumb.jpg`;
+      const nombreHd = `files/${base}_hd.jpg`;
+      zip.file(nombreThumb, blobThumb);
+      zip.file(nombreHd, blobHd);
+
+      const dispW = Math.min(canvasThumb.width, anchoGlobo);
+      const fecha = formatearFechaExif(exif.fecha);
+      const desc =
+        `<![CDATA[<div style='font-family:sans-serif;font-size:13px;width:${dispW}px;'>` +
+        `<b>${escaparXml(archivo.name)}</b><br>` +
+        `${escaparXml(fecha)}<br>` +
+        `Lat: ${exif.lat.toFixed(6)} &nbsp; Lon: ${exif.lon.toFixed(6)} &nbsp; Alt: ${Math.round(exif.alt||0)} m<br><br>` +
+        `<a href='${nombreHd}'>` +
+        `<img src='${nombreThumb}' width='${dispW}' style='width:${dispW}px;height:auto;display:block;border:1px solid #888;'><br>` +
+        `Abrir foto original (alta resolución)</a>` +
+        `</div>]]>`;
+
+      placemarks.push(
+        `<Placemark><name>${escaparXml(base)}</name><description>${desc}</description>` +
+        `<styleUrl>#fotoStyle</styleUrl>` +
+        `<Point><coordinates>${exif.lon.toFixed(8)},${exif.lat.toFixed(8)},${(exif.alt||0).toFixed(1)}</coordinates></Point></Placemark>`
+      );
+      log(`✓ ${archivo.name}`, 'ok');
+    } catch (e) {
+      sinGps.push(archivo.name);
+      log(`⚠ ${archivo.name}: error (${e.message}), omitida`, 'warn');
+    }
+    // deja respirar a la UI entre fotos
+    await new Promise(r => setTimeout(r, 0));
+  }
+
+  barraFill.style.width = '100%';
+
+  if (placemarks.length === 0) {
+    log('Ninguna foto tenía coordenadas GPS. No se generó KMZ.', 'warn');
+    btnGenerar.disabled = false;
+    btnElegir.disabled = false;
+    return;
+  }
+
+  const estilo =
+    `<Style id="fotoStyle"><IconStyle><scale>1.1</scale>` +
+    `<Icon><href>http://maps.google.com/mapfiles/kml/shapes/camera.png</href></Icon></IconStyle>` +
+    `<BalloonStyle><text><![CDATA[$[description]]]></text></BalloonStyle></Style>`;
+
+  const kml =
+    `<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document>` +
+    `<name>${escaparXml(nombreDoc)}</name>${estilo}${placemarks.join('')}</Document></kml>`;
+
+  zip.file('doc.kml', kml);
+
+  log('Empaquetando KMZ…');
+  const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+  const url = URL.createObjectURL(blob);
+  linkDescarga.href = url;
+  linkDescarga.download = nombreDoc.replace(/[\\/:*?"<>|]+/g, '_') + '.kmz';
+
+  pillOk.textContent = `✓ ${conGps} con GPS`;
+  if (sinGps.length > 0) {
+    pillWarn.textContent = `⚠ ${sinGps.length} sin GPS (omitidas)`;
+    pillWarn.classList.remove('oculto');
+  } else {
+    pillWarn.classList.add('oculto');
+  }
+  bloqueResumen.classList.remove('oculto');
+
+  log(`KMZ listo: ${(blob.size / 1e6).toFixed(1)} MB`);
+  btnGenerar.disabled = false;
+  btnElegir.disabled = false;
+}
+
+// ============================================================
+// PWA: registro del service worker
+// ============================================================
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  });
+}
+</script>
+</body>
+</html>
