@@ -1,5 +1,5 @@
 // Service worker offline-first (cache estatico)
-const CACHE='fotos-a-kmz-v1';
+const CACHE='fotos-a-kmz-v2';
 const ASSETS=['./','./index.html','./manifest.json','./icons/icon-192.png','./icons/icon-512.png',
   './vendor/jszip.min.js'];
 self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting()));});

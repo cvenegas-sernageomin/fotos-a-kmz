@@ -26,7 +26,11 @@
   .btn:active{background:var(--azul-osc);}
   .btn.secundario{background:#fff;color:var(--azul);border:1px solid var(--azul);}
   .btn[disabled]{opacity:.5;cursor:default;}
-  .btn-file{width:100%;}
+  .btn-file{flex:1;}
+  .fila-botones{display:flex;gap:8px;}
+  .dropzone{margin-top:12px;border:2px dashed var(--borde);border-radius:8px;padding:18px;text-align:center;
+    font-size:13px;color:#888;transition:background .1s,border-color .1s;}
+  .dropzone.activo{background:#eaf2f7;border-color:var(--azul);color:var(--azul-osc);}
   .lista-fotos{font-size:13px;color:#555;margin-top:8px;}
   .progreso{margin-top:12px;}
   .barra{height:8px;background:var(--borde);border-radius:5px;overflow:hidden;}
@@ -49,15 +53,20 @@
 
 <header>
   <h1>📷 Fotos a KMZ</h1>
-  <span class="ver">v1</span>
+  <span class="ver">v2</span>
 </header>
 
 <main>
 
   <div class="card">
     <h2>1. Elegir fotos</h2>
-    <button class="btn btn-file" id="btnElegir">Elegir fotos (.jpg)</button>
+    <div class="fila-botones">
+      <button class="btn btn-file" id="btnElegir">Elegir fotos (.jpg)</button>
+      <button class="btn btn-file secundario" id="btnElegirCarpeta">Elegir carpeta</button>
+    </div>
     <input type="file" id="inputFotos" accept="image/jpeg" multiple>
+    <input type="file" id="inputCarpeta" webkitdirectory multiple>
+    <div class="dropzone" id="dropzone">o arrastrá aquí una carpeta o varias fotos</div>
     <div class="lista-fotos" id="listaFotos">Ninguna foto elegida todavía.</div>
   </div>
 
@@ -284,7 +293,10 @@ function formatearFechaExif(f) {
 // UI + flujo principal
 // ============================================================
 const inputFotos = document.getElementById('inputFotos');
+const inputCarpeta = document.getElementById('inputCarpeta');
 const btnElegir = document.getElementById('btnElegir');
+const btnElegirCarpeta = document.getElementById('btnElegirCarpeta');
+const dropzone = document.getElementById('dropzone');
 const listaFotos = document.getElementById('listaFotos');
 const btnGenerar = document.getElementById('btnGenerar');
 const bloqueProgreso = document.getElementById('bloqueProgreso');
@@ -297,18 +309,74 @@ const linkDescarga = document.getElementById('linkDescarga');
 
 let archivosElegidos = [];
 
-btnElegir.addEventListener('click', () => inputFotos.click());
-
-inputFotos.addEventListener('change', () => {
-  archivosElegidos = Array.from(inputFotos.files).filter(f => /\.(jpe?g)$/i.test(f.name));
+function establecerArchivos(lista) {
+  archivosElegidos = lista.filter(f => /\.(jpe?g)$/i.test(f.name));
   if (archivosElegidos.length === 0) {
-    listaFotos.textContent = 'Ninguna foto elegida todavía.';
+    listaFotos.textContent = lista.length > 0
+      ? 'Ninguna de las fotos elegidas es .jpg/.jpeg.'
+      : 'Ninguna foto elegida todavía.';
     btnGenerar.disabled = true;
   } else {
     listaFotos.textContent = `${archivosElegidos.length} foto(s) elegida(s).`;
     btnGenerar.disabled = false;
   }
   bloqueResumen.classList.add('oculto');
+}
+
+btnElegir.addEventListener('click', () => inputFotos.click());
+btnElegirCarpeta.addEventListener('click', () => inputCarpeta.click());
+
+inputFotos.addEventListener('change', () => establecerArchivos(Array.from(inputFotos.files)));
+inputCarpeta.addEventListener('change', () => establecerArchivos(Array.from(inputCarpeta.files)));
+
+// ---- Arrastrar y soltar (carpeta completa o fotos sueltas) ----
+function entradaAArchivos(entry) {
+  return new Promise(resolve => {
+    if (entry.isFile) {
+      entry.file(file => resolve([file]), () => resolve([]));
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      let acumulado = [];
+      const leerLote = () => reader.readEntries(async entries => {
+        if (entries.length === 0) {
+          const listas = await Promise.all(acumulado.map(entradaAArchivos));
+          resolve(listas.flat());
+        } else {
+          acumulado = acumulado.concat(entries);
+          leerLote(); // readEntries no garantiza traer todo en una sola llamada
+        }
+      }, () => resolve([]));
+      leerLote();
+    } else {
+      resolve([]);
+    }
+  });
+}
+
+async function archivosDesdeDataTransfer(dataTransfer) {
+  const items = Array.from(dataTransfer.items || []);
+  const entradas = items.map(it => it.webkitGetAsEntry && it.webkitGetAsEntry()).filter(Boolean);
+  if (entradas.length > 0) {
+    const listas = await Promise.all(entradas.map(entradaAArchivos));
+    return listas.flat();
+  }
+  return Array.from(dataTransfer.files || []); // respaldo: navegador sin soporte de entries
+}
+
+['dragenter', 'dragover'].forEach(ev => dropzone.addEventListener(ev, e => {
+  e.preventDefault();
+  dropzone.classList.add('activo');
+}));
+['dragleave', 'dragend'].forEach(ev => dropzone.addEventListener(ev, () => {
+  dropzone.classList.remove('activo');
+}));
+dropzone.addEventListener('drop', async e => {
+  e.preventDefault();
+  dropzone.classList.remove('activo');
+  dropzone.textContent = 'Leyendo…';
+  const archivos = await archivosDesdeDataTransfer(e.dataTransfer);
+  dropzone.textContent = 'o arrastrá aquí una carpeta o varias fotos';
+  establecerArchivos(archivos);
 });
 
 function log(msg, clase) {
